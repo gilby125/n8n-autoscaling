@@ -13,15 +13,13 @@ networks:
   n8n-network:
     driver: overlay
     attachable: true
-  dokploy-network:
-    external: true
+  # dokploy-network is automatically attached by Dockploy for services with domains configured
 
 x-n8n: &service-n8n
   image: ${DOCKER_REGISTRY:-}n8n-autoscaling:latest
   user: root:root
   networks:
     - n8n-network
-    - dokploy-network
   environment:
     - N8N_DIAGNOSTICS_ENABLED=${N8N_DIAGNOSTICS_ENABLED}
     - N8N_USER_FOLDER=${N8N_USER_FOLDER}
@@ -109,7 +107,6 @@ services:
       retries: 10
     networks:
       - n8n-network
-      - dokploy-network
     deploy:
       mode: replicated
       replicas: 1
@@ -137,25 +134,10 @@ services:
           - node.role == manager
       restart_policy:
         condition: on-failure
-      labels:
-        - "traefik.enable=true"
-        # IP Whitelist Middleware - REQUIRED: Set ALLOWED_IPS in .env
-        - "traefik.http.middlewares.n8n-ipwhitelist.ipwhitelist.sourcerange=${ALLOWED_IPS}"
-        # n8n UI router - WITH IP restriction
-        - "traefik.http.routers.n8n-ui.rule=Host(`${N8N_HOST}`)"
-        - "traefik.http.routers.n8n-ui.entrypoints=websecure"
-        - "traefik.http.routers.n8n-ui.tls=true"
-        - "traefik.http.routers.n8n-ui.tls.certresolver=letsencrypt"
-        - "traefik.http.routers.n8n-ui.middlewares=n8n-ipwhitelist"
-        - "traefik.http.routers.n8n-ui.service=n8n-ui"
-        - "traefik.http.services.n8n-ui.loadbalancer.server.port=5678"
-        # Webhook router - NO IP restriction (webhooks need to be publicly accessible)
-        - "traefik.http.routers.n8n-webhooks.rule=Host(`${N8N_WEBHOOK}`)"
-        - "traefik.http.routers.n8n-webhooks.entrypoints=websecure"
-        - "traefik.http.routers.n8n-webhooks.tls=true"
-        - "traefik.http.routers.n8n-webhooks.tls.certresolver=letsencrypt"
-        - "traefik.http.routers.n8n-webhooks.service=n8n-webhooks"
-        - "traefik.http.services.n8n-webhooks.loadbalancer.server.port=5678"
+      # Traefik labels are NOT used in Dockploy - configure domains via Dockploy UI instead
+      # Domain: ${N8N_HOST} (e.g., n8n.yourdomain.com)
+      # Port: 5678
+      # IP Whitelist: ${ALLOWED_IPS} (configure in Dockploy domain settings)
 
   n8n-webhook:
     <<: *service-n8n
@@ -172,6 +154,10 @@ services:
           - node.role == manager
       restart_policy:
         condition: on-failure
+      # Traefik labels are NOT used in Dockploy - configure domains via Dockploy UI instead
+      # Domain: ${N8N_WEBHOOK} (e.g., n8n-webhook.yourdomain.com)
+      # Port: 5678
+      # NOTE: Do NOT set IP whitelist - webhooks need to be publicly accessible
 
   n8n-worker:
     <<: *service-n8n
@@ -181,7 +167,6 @@ services:
       - n8n_main:/n8n
     networks:
       - n8n-network
-      - dokploy-network
     healthcheck:
       test: ["CMD", "node", "-v"]
       interval: 5s
