@@ -189,7 +189,7 @@ services:
         condition: on-failure
 
   redis-monitor:
-    image: ${DOCKER_REGISTRY:-}n8n-autoscaling-monitor:latest
+    image: ${DOCKER_REGISTRY:-}n8n-autoscaling-monitor:v2
     networks:
       - n8n-network
     environment:
