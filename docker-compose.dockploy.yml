@@ -155,10 +155,9 @@ services:
         # Attach allowlist to Dockploy-generated routers as well (current stack router names)
         - "traefik.http.routers.n8n-fe-hlxwsw-42-websecure.middlewares=n8n-allowlist@docker"
         - "traefik.http.routers.n8n-fe-hlxwsw-42-web.middlewares=redirect-to-https@file,n8n-allowlist@docker"
-      # Traefik labels are NOT used in Dockploy - configure domains via Dockploy UI instead
-      # Domain: ${N8N_HOST} (e.g., n8n.yourdomain.com)
-      # Port: 5678
-      # IP Whitelist: ${ALLOWED_IPS} (configure in Dockploy domain settings)
+      # Note: Traefik labels ARE used here to enforce IP allowlist on the UI.
+      # Domain host remains configured in Dockploy UI; these labels don't change DNS.
+      # If Dockploy regenerates router names, update the two router-specific middleware labels above.
 
   n8n-webhook:
     <<: *service-n8n
