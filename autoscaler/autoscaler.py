@@ -22,6 +22,9 @@ N8N_WORKER_SERVICE_NAME = os.getenv('N8N_WORKER_SERVICE_NAME')
 COMPOSE_PROJECT_NAME = os.getenv('COMPOSE_PROJECT_NAME') # e.g., "n8n-workers"
 COMPOSE_FILE_PATH = os.getenv('COMPOSE_FILE_PATH') # Path inside this container
 
+# Deployment mode: 'compose' for Docker Compose, 'swarm' for Docker Swarm/Dockploy
+DEPLOYMENT_MODE = os.getenv('DEPLOYMENT_MODE', 'compose').lower()
+
 MIN_REPLICAS = int(os.getenv('MIN_REPLICAS'))
 MAX_REPLICAS = int(os.getenv('MAX_REPLICAS'))
 SCALE_UP_QUEUE_THRESHOLD = int(os.getenv('SCALE_UP_QUEUE_THRESHOLD'))
@@ -71,71 +74,131 @@ def get_queue_length(r_conn):
 
 
 def get_current_replicas(docker_client, service_name, project_name):
-    """Gets the current number of running containers for a Docker Compose service."""
-    if not project_name:
-        logging.warning("COMPOSE_PROJECT_NAME is not set. Cannot accurately determine current replicas.")
-        # As a fallback, we might try to count containers based on service name label alone,
-        # but this is unreliable if multiple projects use the same service name.
-        # For now, return a high number to prevent unintended scaling if project name is missing.
-        return MAX_REPLICAS + 1 # Prevents scaling if project name is missing
+    """Gets the current number of running replicas for a Docker Swarm service or Compose service."""
 
-    try:
-        filters = {
-            "label": [
-                f"com.docker.compose.service={service_name}",
-                f"com.docker.compose.project={project_name}"
-            ],
-            "status": "running"
-        }
-        service_containers = docker_client.containers.list(filters=filters, all=True) # all=True to catch restarting ones too
-        
-        # Further filter by status in Python if 'status' filter is not precise enough
-        running_count = 0
-        for container in service_containers:
-            if container.status == 'running':
-                 running_count +=1
-        logging.info(f"Found {running_count} running containers for service '{service_name}' in project '{project_name}'.")
-        return running_count
-    except Exception as e:
-        logging.error(f"Error getting current replicas for {service_name} in {project_name}: {e}")
-        return MAX_REPLICAS + 1 # Return a safe value to prevent scaling on error
+    if DEPLOYMENT_MODE == 'swarm':
+        # Docker Swarm mode (for Dockploy)
+        try:
+            # Try with project prefix first
+            swarm_service_name = f"{project_name}_{service_name}" if project_name else service_name
+
+            try:
+                service = docker_client.services.get(swarm_service_name)
+                replicas = service.attrs['Spec']['Mode']['Replicated']['Replicas']
+                logging.info(f"[Swarm] Found {replicas} replicas for service '{swarm_service_name}'.")
+                return replicas
+            except docker.errors.NotFound:
+                # Try without project prefix
+                service = docker_client.services.get(service_name)
+                replicas = service.attrs['Spec']['Mode']['Replicated']['Replicas']
+                logging.info(f"[Swarm] Found {replicas} replicas for service '{service_name}'.")
+                return replicas
+        except docker.errors.NotFound:
+            logging.error(f"Swarm service '{service_name}' not found.")
+            return MAX_REPLICAS + 1
+        except Exception as e:
+            logging.error(f"Error getting Swarm service replicas: {e}")
+            return MAX_REPLICAS + 1
+
+    else:
+        # Docker Compose mode (default)
+        if not project_name:
+            logging.warning("COMPOSE_PROJECT_NAME is not set. Cannot accurately determine current replicas.")
+            return MAX_REPLICAS + 1
+
+        try:
+            filters = {
+                "label": [
+                    f"com.docker.compose.service={service_name}",
+                    f"com.docker.compose.project={project_name}"
+                ],
+                "status": "running"
+            }
+            service_containers = docker_client.containers.list(filters=filters, all=True)
+
+            running_count = 0
+            for container in service_containers:
+                if container.status == 'running':
+                     running_count +=1
+            logging.info(f"[Compose] Found {running_count} running containers for service '{service_name}' in project '{project_name}'.")
+            return running_count
+        except Exception as e:
+            logging.error(f"Error getting current replicas for {service_name} in {project_name}: {e}")
+            return MAX_REPLICAS + 1
 
 
 def scale_service(service_name, replicas, compose_file, project_name):
-    """Scales a Docker Compose service using docker-compose CLI."""
-    if not project_name:
-        logging.error("COMPOSE_PROJECT_NAME is not set. Cannot execute docker-compose scale.")
-        return False
+    """Scales a Docker Swarm service or Compose service."""
 
-    command = [
-        "docker",
-        "compose",
-        "-f", compose_file,
-        "--project-name", project_name,
-        "--project-directory", "/app",
-        "up",
-        "-d",
-        "--no-deps",
-        "--scale", f"{service_name}={replicas}",
-        service_name
-    ]
-    logging.info(f"Executing scaling command: {' '.join(command)}")
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-        logging.info(f"Scale command stdout: {result.stdout.strip()}")
-        if result.stderr.strip():
-             logging.warning(f"Scale command stderr: {result.stderr.strip()}")
-        return True
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Error scaling service {service_name} to {replicas}:")
-        logging.error(f"  Command: {' '.join(e.cmd)}")
-        logging.error(f"  Return Code: {e.returncode}")
-        logging.error(f"  Stdout: {e.stdout.strip()}")
-        logging.error(f"  Stderr: {e.stderr.strip()}")
-        return False
-    except FileNotFoundError:
-        logging.error("docker-compose command not found. Ensure it's installed in the autoscaler container and in PATH.")
-        return False
+    if DEPLOYMENT_MODE == 'swarm':
+        # Docker Swarm mode - use docker service scale
+        swarm_service_name = f"{project_name}_{service_name}" if project_name else service_name
+
+        # Try with project prefix first
+        command = ["docker", "service", "scale", f"{swarm_service_name}={replicas}"]
+        logging.info(f"[Swarm] Executing scaling command: {' '.join(command)}")
+
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            logging.info(f"Scale command stdout: {result.stdout.strip()}")
+            if result.stderr.strip():
+                logging.warning(f"Scale command stderr: {result.stderr.strip()}")
+            return True
+        except subprocess.CalledProcessError as e:
+            # Try without project prefix
+            logging.warning(f"Failed with prefix, trying without prefix...")
+            command = ["docker", "service", "scale", f"{service_name}={replicas}"]
+            logging.info(f"[Swarm] Executing scaling command: {' '.join(command)}")
+
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, check=True)
+                logging.info(f"Scale command stdout: {result.stdout.strip()}")
+                if result.stderr.strip():
+                    logging.warning(f"Scale command stderr: {result.stderr.strip()}")
+                return True
+            except subprocess.CalledProcessError as e2:
+                logging.error(f"Error scaling Swarm service {service_name} to {replicas}:")
+                logging.error(f"  Command: {' '.join(e2.cmd)}")
+                logging.error(f"  Return Code: {e2.returncode}")
+                logging.error(f"  Stdout: {e2.stdout.strip()}")
+                logging.error(f"  Stderr: {e2.stderr.strip()}")
+                return False
+
+    else:
+        # Docker Compose mode
+        if not project_name:
+            logging.error("COMPOSE_PROJECT_NAME is not set. Cannot execute docker-compose scale.")
+            return False
+
+        command = [
+            "docker",
+            "compose",
+            "-f", compose_file,
+            "--project-name", project_name,
+            "--project-directory", "/app",
+            "up",
+            "-d",
+            "--no-deps",
+            "--scale", f"{service_name}={replicas}",
+            service_name
+        ]
+        logging.info(f"[Compose] Executing scaling command: {' '.join(command)}")
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            logging.info(f"Scale command stdout: {result.stdout.strip()}")
+            if result.stderr.strip():
+                 logging.warning(f"Scale command stderr: {result.stderr.strip()}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Error scaling service {service_name} to {replicas}:")
+            logging.error(f"  Command: {' '.join(e.cmd)}")
+            logging.error(f"  Return Code: {e.returncode}")
+            logging.error(f"  Stdout: {e.stdout.strip()}")
+            logging.error(f"  Stderr: {e.stderr.strip()}")
+            return False
+        except FileNotFoundError:
+            logging.error("docker-compose command not found. Ensure it's installed in the autoscaler container and in PATH.")
+            return False
 
 def main():
     global last_scale_time
@@ -155,7 +218,8 @@ def main():
         logging.error(f"CRITICAL: Failed to connect to Redis or Docker: {e}")
         return
 
-    logging.info(f"Autoscaler started. Monitoring n8n worker service '{N8N_WORKER_SERVICE_NAME}' in project '{COMPOSE_PROJECT_NAME}'.")
+    logging.info(f"Autoscaler started. Deployment mode: {DEPLOYMENT_MODE.upper()}")
+    logging.info(f"Monitoring n8n worker service '{N8N_WORKER_SERVICE_NAME}' in project '{COMPOSE_PROJECT_NAME}'.")
     logging.info(f"  Min Replicas: {MIN_REPLICAS}, Max Replicas: {MAX_REPLICAS}")
     logging.info(f"  Scale Up Queue Threshold: >{SCALE_UP_QUEUE_THRESHOLD}")
     logging.info(f"  Scale Down Queue Threshold: <{SCALE_DOWN_QUEUE_THRESHOLD}")

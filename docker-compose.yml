@@ -226,6 +226,7 @@ services:
       - N8N_WORKER_SERVICE_NAME=${N8N_WORKER_SERVICE_NAME} # Service name in this docker-compose file
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} # Crucial: Should match your project name
       - COMPOSE_FILE_PATH=/app/docker-compose.yml # Path to compose file in mounted project
+      - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-compose} # 'compose' for standalone, 'swarm' for Dockploy
       - MIN_REPLICAS=${MIN_REPLICAS}
       - MAX_REPLICAS=${MAX_REPLICAS} # Adjust as needed
       - SCALE_UP_QUEUE_THRESHOLD=${SCALE_UP_QUEUE_THRESHOLD} # Scale up if queue length > 5

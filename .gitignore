@@ -1,3 +1,4 @@
 # .gitignore
 .env
 .claude/
+CLAUDE.md

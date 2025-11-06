@@ -1,0 +1,247 @@
+version: '3.8'
+
+# Dockploy-compatible docker-compose file for n8n-autoscaling
+# This version uses Dockploy's Traefik and works with Docker Swarm
+
+volumes:
+  postgres_data:
+  redis_data:
+  n8n_main:
+  n8n_webhook:
+
+networks:
+  n8n-network:
+    driver: overlay
+    attachable: true
+  dokploy-network:
+    external: true
+
+x-n8n: &service-n8n
+  image: ${DOCKER_REGISTRY:-}n8n-autoscaling:latest
+  user: root:root
+  networks:
+    - n8n-network
+    - dokploy-network
+  environment:
+    - N8N_DIAGNOSTICS_ENABLED=${N8N_DIAGNOSTICS_ENABLED}
+    - N8N_USER_FOLDER=${N8N_USER_FOLDER}
+    - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE}
+    - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS}
+    - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+    - N8N_HOST=${N8N_HOST}
+    - N8N_PROTOCOL=${N8N_PROTOCOL}
+    - N8N_WEBHOOK=${N8N_WEBHOOK}
+    - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+    - WEBHOOK_URL=${WEBHOOK_URL}
+    - N8N_EDITOR_BASE_URL=${N8N_EDITOR_BASE_URL}
+    - N8N_DATA_TABLES_MAX_SIZE_BYTES=${N8N_DATA_TABLES_MAX_SIZE_BYTES}
+    # Queue mode config
+    - EXECUTIONS_MODE=${EXECUTIONS_MODE}
+    - QUEUE_BULL_REDIS_HOST=${QUEUE_BULL_REDIS_HOST}
+    - QUEUE_HEALTH_CHECK_ACTIVE=${QUEUE_HEALTH_CHECK_ACTIVE}
+    - N8N_QUEUE_BULL_GRACEFULSHUTDOWNTIMEOUT=${N8N_QUEUE_BULL_GRACEFULSHUTDOWNTIMEOUT}
+    - N8N_GRACEFUL_SHUTDOWN_TIMEOUT=${N8N_GRACEFUL_SHUTDOWN_TIMEOUT}
+    # DB config
+    - DB_TYPE=${DB_TYPE}
+    - DB_POSTGRESDB_HOST=${POSTGRES_HOST}
+    - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+    - DB_POSTGRESDB_USER=${POSTGRES_USER}
+    - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+    # Task Runner config
+    - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=${OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS}
+    - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+    - N8N_TASK_BROKER_URL=${N8N_TASK_BROKER_URL}
+    - N8N_COMMAND_RESPONSE_URL=${N8N_COMMAND_RESPONSE_URL}
+    - N8N_TASK_BROKER_PORT=${N8N_TASK_BROKER_PORT}
+    - NODE_FUNCTION_ALLOW_EXTERNAL=ajv,ajv-formats,puppeteer
+    - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+services:
+  # Optional: Cloudflare Tunnel - uncomment if you want to use it with Dockploy
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   networks:
+  #     - n8n-network
+  #   command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+  #   environment:
+  #     - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+  #   deploy:
+  #     mode: replicated
+  #     replicas: 1
+  #     restart_policy:
+  #       condition: on-failure
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+    volumes:
+      - redis_data:/data
+    networks:
+      - n8n-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - PGDATA=${PGDATA}
+      - POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Note: pgvector extension can be enabled via SQL: CREATE EXTENSION IF NOT EXISTS vector;
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - n8n-network
+      - dokploy-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  n8n:
+    <<: *service-n8n
+    volumes:
+      - n8n_main:/n8n
+    healthcheck:
+      test: ["CMD", "node", "-v"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+      labels:
+        - "traefik.enable=true"
+        # IP Whitelist Middleware - REQUIRED: Set ALLOWED_IPS in .env
+        - "traefik.http.middlewares.n8n-ipwhitelist.ipwhitelist.sourcerange=${ALLOWED_IPS}"
+        # n8n UI router - WITH IP restriction
+        - "traefik.http.routers.n8n-ui.rule=Host(`${N8N_HOST}`)"
+        - "traefik.http.routers.n8n-ui.entrypoints=websecure"
+        - "traefik.http.routers.n8n-ui.tls=true"
+        - "traefik.http.routers.n8n-ui.tls.certresolver=letsencrypt"
+        - "traefik.http.routers.n8n-ui.middlewares=n8n-ipwhitelist@docker"
+        - "traefik.http.services.n8n-ui.loadbalancer.server.port=5678"
+        # Webhook router - NO IP restriction (webhooks need to be publicly accessible)
+        - "traefik.http.routers.n8n-webhooks.rule=Host(`${N8N_WEBHOOK}`)"
+        - "traefik.http.routers.n8n-webhooks.entrypoints=websecure"
+        - "traefik.http.routers.n8n-webhooks.tls=true"
+        - "traefik.http.routers.n8n-webhooks.tls.certresolver=letsencrypt"
+        - "traefik.http.services.n8n-webhooks.loadbalancer.server.port=5678"
+
+  n8n-webhook:
+    <<: *service-n8n
+    command: sh /webhook
+    volumes:
+      - n8n_webhook:/n8n
+    networks:
+      - n8n-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  n8n-worker:
+    <<: *service-n8n
+    command: sh /worker
+    stop_grace_period: 5m
+    volumes:
+      - n8n_main:/n8n
+    networks:
+      - n8n-network
+      - dokploy-network
+    healthcheck:
+      test: ["CMD", "node", "-v"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      mode: replicated
+      replicas: 1  # Initial replica count - autoscaler will adjust this
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  redis-monitor:
+    image: ${DOCKER_REGISTRY:-}n8n-autoscaling-monitor:latest
+    networks:
+      - n8n-network
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - QUEUE_NAME_PREFIX=${QUEUE_NAME_PREFIX}
+      - QUEUE_NAME=${QUEUE_NAME}
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS}
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  n8n-autoscaler:
+    image: ${DOCKER_REGISTRY:-}n8n-autoscaling-autoscaler:latest
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - QUEUE_NAME_PREFIX=${QUEUE_NAME_PREFIX}
+      - QUEUE_NAME=${QUEUE_NAME}
+      - N8N_WORKER_SERVICE_NAME=${N8N_WORKER_SERVICE_NAME}
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+      - COMPOSE_FILE_PATH=/app/docker-compose.yml
+      - MIN_REPLICAS=${MIN_REPLICAS}
+      - MAX_REPLICAS=${MAX_REPLICAS}
+      - SCALE_UP_QUEUE_THRESHOLD=${SCALE_UP_QUEUE_THRESHOLD}
+      - SCALE_DOWN_QUEUE_THRESHOLD=${SCALE_DOWN_QUEUE_THRESHOLD}
+      - POLLING_INTERVAL_SECONDS=${POLLING_INTERVAL_SECONDS}
+      - COOLDOWN_PERIOD_SECONDS=${COOLDOWN_PERIOD_SECONDS}
+      - DEPLOYMENT_MODE=swarm  # Important: Set to 'swarm' for Dockploy
+      - N8N_QUEUE_BULL_GRACEFULSHUTDOWNTIMEOUT=${N8N_QUEUE_BULL_GRACEFULSHUTDOWNTIMEOUT}
+      - N8N_GRACEFUL_SHUTDOWN_TIMEOUT=${N8N_GRACEFUL_SHUTDOWN_TIMEOUT}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Note: .env not needed - all vars passed via environment section above
+    networks:
+      - n8n-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints:
+          - node.role == manager  # Autoscaler needs to run on a manager node
