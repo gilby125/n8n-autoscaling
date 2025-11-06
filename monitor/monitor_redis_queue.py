@@ -82,7 +82,20 @@ def get_queue_length(r_conn, queue_name_prefix, queue_name):
 
 
 if __name__ == "__main__":
-    redis_conn = get_redis_connection()
+    # Retry connection up to 10 times with 5 second intervals
+    max_retries = 10
+    retry_delay = 5
+    redis_conn = None
+
+    for attempt in range(1, max_retries + 1):
+        print(f"Attempting to connect to Redis (attempt {attempt}/{max_retries})...")
+        redis_conn = get_redis_connection()
+        if redis_conn:
+            break
+        if attempt < max_retries:
+            print(f"Retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
+
     if redis_conn:
         print(f"Monitoring Redis queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}' every {POLL_INTERVAL_SECONDS} seconds...")
         print("Press Ctrl+C to stop.")
@@ -96,3 +109,6 @@ if __name__ == "__main__":
         finally:
             redis_conn.close()
             print("Redis connection closed.")
+    else:
+        print(f"Failed to connect to Redis after {max_retries} attempts. Exiting.")
+        exit(1)
