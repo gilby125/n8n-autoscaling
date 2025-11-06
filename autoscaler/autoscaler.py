@@ -79,23 +79,24 @@ def get_current_replicas(docker_client, service_name, project_name):
     if DEPLOYMENT_MODE == 'swarm':
         # Docker Swarm mode (for Dockploy)
         try:
-            # Try with project prefix first
-            swarm_service_name = f"{project_name}_{service_name}" if project_name else service_name
+            # Find service by pattern matching (works with any project name)
+            services = docker_client.services.list()
+            worker_service = None
 
-            try:
-                service = docker_client.services.get(swarm_service_name)
-                replicas = service.attrs['Spec']['Mode']['Replicated']['Replicas']
-                logging.info(f"[Swarm] Found {replicas} replicas for service '{swarm_service_name}'.")
+            for svc in services:
+                if svc.name.endswith(f'_{service_name}'):
+                    worker_service = svc
+                    logging.info(f"[Swarm] Found worker service: {svc.name}")
+                    break
+
+            if worker_service:
+                replicas = worker_service.attrs['Spec']['Mode']['Replicated']['Replicas']
+                logging.info(f"[Swarm] Current replicas: {replicas}")
                 return replicas
-            except docker.errors.NotFound:
-                # Try without project prefix
-                service = docker_client.services.get(service_name)
-                replicas = service.attrs['Spec']['Mode']['Replicated']['Replicas']
-                logging.info(f"[Swarm] Found {replicas} replicas for service '{service_name}'.")
-                return replicas
-        except docker.errors.NotFound:
-            logging.error(f"Swarm service '{service_name}' not found.")
-            return MAX_REPLICAS + 1
+            else:
+                logging.error(f"[Swarm] No service found matching pattern '*_{service_name}'")
+                return MAX_REPLICAS + 1
+
         except Exception as e:
             logging.error(f"Error getting Swarm service replicas: {e}")
             return MAX_REPLICAS + 1
@@ -131,38 +132,42 @@ def scale_service(service_name, replicas, compose_file, project_name):
     """Scales a Docker Swarm service or Compose service."""
 
     if DEPLOYMENT_MODE == 'swarm':
-        # Docker Swarm mode - use docker service scale
-        swarm_service_name = f"{project_name}_{service_name}" if project_name else service_name
-
-        # Try with project prefix first
-        command = ["docker", "service", "scale", f"{swarm_service_name}={replicas}"]
-        logging.info(f"[Swarm] Executing scaling command: {' '.join(command)}")
-
+        # Docker Swarm mode - find service by pattern and scale it
         try:
+            import docker
+            docker_cl = docker.from_env()
+            services = docker_cl.services.list()
+
+            worker_service = None
+            for svc in services:
+                if svc.name.endswith(f'_{service_name}'):
+                    worker_service = svc
+                    break
+
+            if not worker_service:
+                logging.error(f"[Swarm] No service found matching pattern '*_{service_name}'")
+                return False
+
+            full_service_name = worker_service.name
+            command = ["docker", "service", "scale", f"{full_service_name}={replicas}"]
+            logging.info(f"[Swarm] Executing scaling command: {' '.join(command)}")
+
             result = subprocess.run(command, capture_output=True, text=True, check=True)
             logging.info(f"Scale command stdout: {result.stdout.strip()}")
             if result.stderr.strip():
                 logging.warning(f"Scale command stderr: {result.stderr.strip()}")
             return True
-        except subprocess.CalledProcessError as e:
-            # Try without project prefix
-            logging.warning(f"Failed with prefix, trying without prefix...")
-            command = ["docker", "service", "scale", f"{service_name}={replicas}"]
-            logging.info(f"[Swarm] Executing scaling command: {' '.join(command)}")
 
-            try:
-                result = subprocess.run(command, capture_output=True, text=True, check=True)
-                logging.info(f"Scale command stdout: {result.stdout.strip()}")
-                if result.stderr.strip():
-                    logging.warning(f"Scale command stderr: {result.stderr.strip()}")
-                return True
-            except subprocess.CalledProcessError as e2:
-                logging.error(f"Error scaling Swarm service {service_name} to {replicas}:")
-                logging.error(f"  Command: {' '.join(e2.cmd)}")
-                logging.error(f"  Return Code: {e2.returncode}")
-                logging.error(f"  Stdout: {e2.stdout.strip()}")
-                logging.error(f"  Stderr: {e2.stderr.strip()}")
-                return False
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Error scaling Swarm service {service_name} to {replicas}:")
+            logging.error(f"  Command: {' '.join(e.cmd)}")
+            logging.error(f"  Return Code: {e.returncode}")
+            logging.error(f"  Stdout: {e.stdout.strip()}")
+            logging.error(f"  Stderr: {e.stderr.strip()}")
+            return False
+        except Exception as e:
+            logging.error(f"Error finding/scaling Swarm service: {e}")
+            return False
 
     else:
         # Docker Compose mode
@@ -202,9 +207,10 @@ def scale_service(service_name, replicas, compose_file, project_name):
 
 def main():
     global last_scale_time
-    
-    if not COMPOSE_PROJECT_NAME:
-        logging.error("CRITICAL: COMPOSE_PROJECT_NAME environment variable is not set. Autoscaler cannot function correctly.")
+
+    # In Compose mode, project name is required. In Swarm mode, it's optional (auto-detected)
+    if not COMPOSE_PROJECT_NAME and DEPLOYMENT_MODE == 'compose':
+        logging.error("CRITICAL: COMPOSE_PROJECT_NAME environment variable is required for Compose mode.")
         logging.error("Please set COMPOSE_PROJECT_NAME to the name of your Docker Compose project (usually the directory name).")
         return # Exit if critical env var is missing
 
@@ -219,7 +225,10 @@ def main():
         return
 
     logging.info(f"Autoscaler started. Deployment mode: {DEPLOYMENT_MODE.upper()}")
-    logging.info(f"Monitoring n8n worker service '{N8N_WORKER_SERVICE_NAME}' in project '{COMPOSE_PROJECT_NAME}'.")
+    if DEPLOYMENT_MODE == 'swarm':
+        logging.info(f"Monitoring n8n worker service pattern '*_{N8N_WORKER_SERVICE_NAME}' (auto-detected)")
+    else:
+        logging.info(f"Monitoring n8n worker service '{N8N_WORKER_SERVICE_NAME}' in project '{COMPOSE_PROJECT_NAME}'.")
     logging.info(f"  Min Replicas: {MIN_REPLICAS}, Max Replicas: {MAX_REPLICAS}")
     logging.info(f"  Scale Up Queue Threshold: >{SCALE_UP_QUEUE_THRESHOLD}")
     logging.info(f"  Scale Down Queue Threshold: <{SCALE_DOWN_QUEUE_THRESHOLD}")
