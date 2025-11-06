@@ -1,4 +1,5 @@
 # Use an official Python runtime as a parent image
+# Build version: 2025-11-06-v2
 FROM python:3.9-slim
 
 # Set the working directory in the container
