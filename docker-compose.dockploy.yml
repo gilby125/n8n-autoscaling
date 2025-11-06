@@ -147,12 +147,14 @@ services:
         - "traefik.http.routers.n8n-ui.tls=true"
         - "traefik.http.routers.n8n-ui.tls.certresolver=letsencrypt"
         - "traefik.http.routers.n8n-ui.middlewares=n8n-ipwhitelist@docker"
+        - "traefik.http.routers.n8n-ui.service=n8n-ui"
         - "traefik.http.services.n8n-ui.loadbalancer.server.port=5678"
         # Webhook router - NO IP restriction (webhooks need to be publicly accessible)
         - "traefik.http.routers.n8n-webhooks.rule=Host(`${N8N_WEBHOOK}`)"
         - "traefik.http.routers.n8n-webhooks.entrypoints=websecure"
         - "traefik.http.routers.n8n-webhooks.tls=true"
         - "traefik.http.routers.n8n-webhooks.tls.certresolver=letsencrypt"
+        - "traefik.http.routers.n8n-webhooks.service=n8n-webhooks"
         - "traefik.http.services.n8n-webhooks.loadbalancer.server.port=5678"
 
   n8n-webhook:
