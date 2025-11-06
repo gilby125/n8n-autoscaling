@@ -13,13 +13,15 @@ networks:
   n8n-network:
     driver: overlay
     attachable: true
-  # dokploy-network is automatically attached by Dockploy for services with domains configured
+  dokploy-network:
+    external: true
 
 x-n8n: &service-n8n
   image: ${DOCKER_REGISTRY:-}n8n-autoscaling:latest
   user: root:root
   networks:
     - n8n-network
+    - dokploy-network
   environment:
     - N8N_DIAGNOSTICS_ENABLED=${N8N_DIAGNOSTICS_ENABLED}
     - N8N_USER_FOLDER=${N8N_USER_FOLDER}
@@ -107,6 +109,7 @@ services:
       retries: 10
     networks:
       - n8n-network
+      - dokploy-network
     deploy:
       mode: replicated
       replicas: 1
@@ -167,6 +170,7 @@ services:
       - n8n_main:/n8n
     networks:
       - n8n-network
+      - dokploy-network
     healthcheck:
       test: ["CMD", "node", "-v"]
       interval: 5s
