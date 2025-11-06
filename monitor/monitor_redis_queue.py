@@ -16,7 +16,7 @@ def get_redis_connection():
         r.ping()
         print(f"Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
         return r
-    except redis.exceptions.ConnectionError as e:
+    except Exception as e:
         print(f"Error connecting to Redis: {e}")
         return None
 
@@ -82,33 +82,29 @@ def get_queue_length(r_conn, queue_name_prefix, queue_name):
 
 
 if __name__ == "__main__":
-    # Retry connection up to 10 times with 5 second intervals
-    max_retries = 10
+    # Continuous retry with backoff; do not exit so Swarm doesn't mark task complete
     retry_delay = 5
     redis_conn = None
 
-    for attempt in range(1, max_retries + 1):
-        print(f"Attempting to connect to Redis (attempt {attempt}/{max_retries})...")
+    while not redis_conn:
+        print(f"Attempting to connect to Redis at {REDIS_HOST}:{REDIS_PORT}...")
         redis_conn = get_redis_connection()
-        if redis_conn:
-            break
-        if attempt < max_retries:
+        if not redis_conn:
             print(f"Retrying in {retry_delay} seconds...")
             time.sleep(retry_delay)
 
-    if redis_conn:
-        print(f"Monitoring Redis queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}' every {POLL_INTERVAL_SECONDS} seconds...")
-        print("Press Ctrl+C to stop.")
+    print(f"Monitoring Redis queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}' every {POLL_INTERVAL_SECONDS} seconds...")
+    print("Press Ctrl+C to stop.")
+    try:
+        while True:
+            length = get_queue_length(redis_conn, QUEUE_NAME_PREFIX, QUEUE_NAME)
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}:wait' length: {length}")
+            time.sleep(POLL_INTERVAL_SECONDS)
+    except KeyboardInterrupt:
+        print("\nMonitoring stopped by user.")
+    finally:
         try:
-            while True:
-                length = get_queue_length(redis_conn, QUEUE_NAME_PREFIX, QUEUE_NAME)
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}:wait' length: {length}")
-                time.sleep(POLL_INTERVAL_SECONDS)
-        except KeyboardInterrupt:
-            print("\nMonitoring stopped by user.")
-        finally:
             redis_conn.close()
             print("Redis connection closed.")
-    else:
-        print(f"Failed to connect to Redis after {max_retries} attempts. Exiting.")
-        exit(1)
+        except Exception:
+            pass

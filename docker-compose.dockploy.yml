@@ -121,6 +121,9 @@ services:
 
   n8n:
     <<: *service-n8n
+    networks:
+      - n8n-network
+      - dokploy-network
     volumes:
       - n8n_main:/n8n
     healthcheck:
@@ -198,11 +201,12 @@ services:
     deploy:
       mode: replicated
       replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
       placement:
         constraints:
           - node.role == manager
-      restart_policy:
-        condition: on-failure
 
   n8n-autoscaler:
     image: ${DOCKER_REGISTRY:-}n8n-autoscaling-autoscaler:latest
