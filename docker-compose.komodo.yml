@@ -61,15 +61,11 @@ x-n8n: &service-n8n
     - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 services:
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    networks:
-      - komodo_default
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-    environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
-
+  # Note: cloudflared is already running as part of Komodo (komodo-cloudflared-1)
+  # Add hostnames to the existing tunnel in Cloudflare dashboard:
+  # - n8n.throughfire.net -> http://traefik:80
+  # - n8n-webhook.throughfire.net -> http://traefik:80
+  
   redis:
     image: redis:7-alpine
     restart: unless-stopped
