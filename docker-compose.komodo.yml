@@ -63,8 +63,8 @@ x-n8n: &service-n8n
 services:
   # Note: cloudflared is already running as part of Komodo (komodo-cloudflared-1)
   # Add hostnames to the existing tunnel in Cloudflare dashboard:
-  # - n8n.throughfire.net -> http://traefik:80
-  # - n8n-webhook.throughfire.net -> http://traefik:80
+  # - n8n.sdrcar.com -> http://traefik:80
+  # - n8n-webhook.sdrcar.com -> http://traefik:80
   
   redis:
     image: redis:7-alpine
