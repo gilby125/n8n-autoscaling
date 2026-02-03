@@ -61,6 +61,15 @@ x-n8n: &service-n8n
     - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    networks:
+      - komodo_default
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
