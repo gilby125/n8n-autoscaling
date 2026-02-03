@@ -1,0 +1,214 @@
+version: '3.8'
+
+# Docker Compose file for Komodo deployment
+# Uses Komodo's existing Traefik instance
+# Deploy with: docker context use komodo-local && docker compose -f docker-compose.komodo.yml up -d
+
+volumes:
+  postgres_data:
+  redis_data:
+  n8n_main:
+  n8n_webhook:
+
+networks:
+  n8n-network:
+    driver: bridge
+  # Connect to Komodo's Traefik network (adjust name if different)
+  traefik:
+    external: true
+
+x-n8n: &service-n8n
+  build:
+    context: .
+    dockerfile: Dockerfile
+  user: root:root
+  restart: unless-stopped
+  networks:
+    - n8n-network
+    - traefik
+  environment:
+    - N8N_DIAGNOSTICS_ENABLED=${N8N_DIAGNOSTICS_ENABLED}
+    - N8N_USER_FOLDER=${N8N_USER_FOLDER}
+    - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE}
+    - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS}
+    - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+    - N8N_HOST=${N8N_HOST}
+    - N8N_PROTOCOL=${N8N_PROTOCOL}
+    - N8N_WEBHOOK=${N8N_WEBHOOK}
+    - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+    - WEBHOOK_URL=${WEBHOOK_URL}
+    - N8N_EDITOR_BASE_URL=${N8N_EDITOR_BASE_URL}
+    - N8N_DATA_TABLES_MAX_SIZE_BYTES=${N8N_DATA_TABLES_MAX_SIZE_BYTES}
+    # Queue mode config
+    - EXECUTIONS_MODE=${EXECUTIONS_MODE}
+    - QUEUE_BULL_REDIS_HOST=${QUEUE_BULL_REDIS_HOST}
+    - QUEUE_HEALTH_CHECK_ACTIVE=${QUEUE_HEALTH_CHECK_ACTIVE}
+    - N8N_QUEUE_BULL_GRACEFULSHUTDOWNTIMEOUT=${N8N_QUEUE_BULL_GRACEFULSHUTDOWNTIMEOUT}
+    - N8N_GRACEFUL_SHUTDOWN_TIMEOUT=${N8N_GRACEFUL_SHUTDOWN_TIMEOUT}
+    # DB config
+    - DB_TYPE=${DB_TYPE}
+    - DB_POSTGRESDB_HOST=${POSTGRES_HOST}
+    - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+    - DB_POSTGRESDB_USER=${POSTGRES_USER}
+    - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+    # Task Runner config
+    - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=${OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS}
+    - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+    - N8N_TASK_BROKER_URL=${N8N_TASK_BROKER_URL}
+    - N8N_COMMAND_RESPONSE_URL=${N8N_COMMAND_RESPONSE_URL}
+    - N8N_TASK_BROKER_PORT=${N8N_TASK_BROKER_PORT}
+    - NODE_FUNCTION_ALLOW_EXTERNAL=ajv,ajv-formats,puppeteer
+    - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+    volumes:
+      - redis_data:/data
+    networks:
+      - n8n-network
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - PGDATA=${PGDATA}
+      - POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-pgvector.sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - n8n-network
+
+  n8n:
+    <<: *service-n8n
+    volumes:
+      - n8n_main:/n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-v"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    labels:
+      # Traefik labels for Komodo's existing Traefik
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n-ui.rule=Host(`${N8N_HOST}`)"
+      - "traefik.http.routers.n8n-ui.entrypoints=web,websecure"
+      - "traefik.http.routers.n8n-ui.tls=true"
+      - "traefik.http.routers.n8n-ui.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.n8n-ui.service=n8n"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+      # IP Allowlist middleware for UI (if ALLOWED_IPS is set)
+      - "traefik.http.routers.n8n-ui.middlewares=n8n-allowlist"
+      - "traefik.http.middlewares.n8n-allowlist.ipWhiteList.sourceRange=${ALLOWED_IPS}"
+      - "traefik.docker.network=traefik"
+
+  n8n-webhook:
+    <<: *service-n8n
+    command: sh /webhook
+    volumes:
+      - n8n_webhook:/n8n
+    depends_on:
+      n8n:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    labels:
+      # Webhooks need to be publicly accessible
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n-webhook.rule=Host(`${N8N_WEBHOOK}`)"
+      - "traefik.http.routers.n8n-webhook.entrypoints=web,websecure"
+      - "traefik.http.routers.n8n-webhook.tls=true"
+      - "traefik.http.routers.n8n-webhook.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.n8n-webhook.service=n8n-webhook"
+      - "traefik.http.services.n8n-webhook.loadbalancer.server.port=5678"
+      - "traefik.docker.network=traefik"
+
+  n8n-worker:
+    <<: *service-n8n
+    stop_grace_period: 5m
+    command: sh /worker
+    volumes:
+      - n8n_main:/n8n
+    depends_on:
+      n8n:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-v"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis-monitor:
+    build:
+      context: .
+      dockerfile: monitor/monitor.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - n8n-network
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - QUEUE_NAME_PREFIX=${QUEUE_NAME_PREFIX}
+      - QUEUE_NAME=${QUEUE_NAME}
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS}
+
+  n8n-autoscaler:
+    build:
+      context: .
+      dockerfile: autoscaler/Dockerfile
+    restart: unless-stopped
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - QUEUE_NAME_PREFIX=${QUEUE_NAME_PREFIX}
+      - QUEUE_NAME=${QUEUE_NAME}
+      - N8N_WORKER_SERVICE_NAME=n8n-worker
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+      - COMPOSE_FILE_PATH=/app/docker-compose.komodo.yml
+      - DEPLOYMENT_MODE=compose
+      - MIN_REPLICAS=${MIN_REPLICAS}
+      - MAX_REPLICAS=${MAX_REPLICAS}
+      - SCALE_UP_QUEUE_THRESHOLD=${SCALE_UP_QUEUE_THRESHOLD}
+      - SCALE_DOWN_QUEUE_THRESHOLD=${SCALE_DOWN_QUEUE_THRESHOLD}
+      - POLLING_INTERVAL_SECONDS=${POLLING_INTERVAL_SECONDS}
+      - COOLDOWN_PERIOD_SECONDS=${COOLDOWN_PERIOD_SECONDS}
+      - N8N_QUEUE_BULL_GRACEFULSHUTDOWNTIMEOUT=${N8N_QUEUE_BULL_GRACEFULSHUTDOWNTIMEOUT}
+      - N8N_GRACEFUL_SHUTDOWN_TIMEOUT=${N8N_GRACEFUL_SHUTDOWN_TIMEOUT}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.komodo.yml:/app/docker-compose.komodo.yml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - n8n-network
